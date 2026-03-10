@@ -31,10 +31,11 @@ app.post("/token", (req, res) => {
     process.env.TWILIO_API_SECRET,
     { identity }
   );
-  const grant = new VoiceGrant({
+const grant = new VoiceGrant({
     outgoingApplicationSid: TWILIO_TWIML_APP_SID,
     incomingAllow: true,
-  });
+    edge: "roaming",
+});
   token.addGrant(grant);
   res.json({ token: token.toJwt(), identity, expiresIn: 3600 });
 });
