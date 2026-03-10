@@ -5,9 +5,139 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VoxDesk</title>
   <script src="https://sdk.twilio.com/js/client/releases/2.9.0/twilio.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #0c0f1a; color: #e0e3f0; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+    input { width: 100%; background: #0c0f1a; border: 1px solid #1c2030; border-radius: 12px; padding: 14px; color: #e0e3f0; font-size: 20px; font-family: monospace; text-align: center; outline: none; margin-bottom: 16px; letter-spacing: 0.06em; }
+    .grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }
+    .key { background: #181d2e; border: none; color: #e0e3f0; border-radius: 12px; padding: 15px; font-size: 18px; cursor: pointer; }
+    .key:hover { background: #252a3d; }
+    .btn-call { flex: 1; background: linear-gradient(135deg,#16a34a,#15803d); border: none; color: white; border-radius: 12px; padding: 13px; font-size: 20px; cursor: pointer; }
+    .btn-hangup { flex: 1; background: #dc2626; border: none; color: white; border-radius: 12px; padding: 13px; font-size: 20px; cursor: pointer; }
+    .btn-del { background: #181d2e; border: none; color: #6b7280; border-radius: 12px; padding: 13px 16px; font-size: 16px; cursor: pointer; }
+    .btn-mute { width: 100%; margin-top: 10px; background: #1e2a30; border: none; color: #9ca3af; border-radius: 12px; padding: 10px; font-size: 13px; cursor: pointer; }
+    .card { background: #10131f; border: 1px solid #1c2030; border-radius: 20px; padding: 28px; width: 100%; max-width: 320px; }
+    .status { display: flex; align-items: center; gap: 8px; background: #10131f; border: 1px solid #1c2030; border-radius: 20px; padding: 6px 16px; margin-bottom: 24px; font-size: 13px; color: #8b90a8; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; }
+    .logo-icon { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg,#34d399,#3b82f6); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .logo-text { font-size: 22px; font-weight: 700; }
+    .badge { font-size: 11px; background: #1c2030; color: #4b5280; padding: 2px 8px; border-radius: 10px; }
+    .error { background: #2d0a0a; border: 1px solid #7f1d1d; border-radius: 10px; padding: 8px 16px; margin-bottom: 16px; font-size: 12px; color: #fca5a5; max-width: 320px; text-align: center; }
+    .row { display: flex; gap: 8px; }
+  </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="module" src="/frontend-live.jsx"></script>
+
+<div class="logo">
+  <div class="logo-icon">📞</div>
+  <span class="logo-text">VoxDesk</span>
+  <span class="badge">LIVE</span>
+</div>
+
+<div class="status">
+  <div class="dot" id="dot" style="background:#6b7280"></div>
+  <span id="statusText">SDK: disconnesso</span>
+  <button id="reconnectBtn" onclick="initDevice()" style="display:none; margin-left:8px; background:#1c2030; border:none; color:#9ca3af; border-radius:6px; padding:2px 10px; font-size:11px; cursor:pointer;">Riconnetti</button>
+</div>
+
+<div id="errorBox" class="error" style="display:none"></div>
+
+<div class="card">
+  <input id="dialInput" placeholder="+39 oppure +353..." />
+  <div class="grid" id="keypad"></div>
+  <div class="row">
+    <button class="btn-del" onclick="del()">⌫</button>
+    <button class="btn-call" id="callBtn" onclick="handleCall()">📞</button>
+  </div>
+  <button class="btn-mute" id="muteBtn" style="display:none" onclick="toggleMute()">🎤 Silenzia microfono</button>
+</div>
+
+<script>
+const BACKEND_URL = "https://voxdesk-backend-production.up.railway.app";
+let device, activeCall, muted = false, timer, seconds = 0;
+
+// Tastierino
+const keys = ["1","2","3","4","5","6","7","8","9","*","0","#"];
+const keypad = document.getElementById("keypad");
+keys.forEach(k => {
+  const btn = document.createElement("button");
+  btn.className = "key";
+  btn.textContent = k;
+  btn.onclick = () => document.getElementById("dialInput").value += k;
+  keypad.appendChild(btn);
+});
+
+function del() {
+  const i = document.getElementById("dialInput");
+  i.value = i.value.slice(0, -1);
+}
+
+function setStatus(s, color) {
+  document.getElementById("statusText").textContent = "SDK: " + s;
+  document.getElementById("dot").style.background = color;
+  const reconnect = document.getElementById("reconnectBtn");
+  reconnect.style.display = (s === "errore" || s === "disconnesso") ? "block" : "none";
+}
+
+function showError(msg) {
+  const box = document.getElementById("errorBox");
+  box.textContent = "⚠️ " + msg;
+  box.style.display = "block";
+}
+
+async function initDevice() {
+  setStatus("connessione...", "#fbbf24");
+  try {
+    const res = await fetch(BACKEND_URL + "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity: "agente_1" })
+    });
+    const { token } = await res.json();
+    device = new Twilio.Device(token, { logLevel: 1 });
+    device.on("ready", () => setStatus("pronto", "#4ade80"));
+    device.on("error", err => { showError(err.message); setStatus("errore", "#ef4444"); });
+    device.on("disconnect", () => { setStatus("pronto", "#4ade80"); stopTimer(); document.getElementById("callBtn").className = "btn-call"; document.getElementById("callBtn").textContent = "📞"; document.getElementById("muteBtn").style.display = "none"; });
+    device.register();
+  } catch(err) {
+    showError(err.message);
+    setStatus("errore", "#ef4444");
+  }
+}
+
+function startTimer() {
+  seconds = 0;
+  timer = setInterval(() => {
+    seconds++;
+    const m = String(Math.floor(seconds/60)).padStart(2,"0");
+    const s = String(seconds%60).padStart(2,"0");
+    document.getElementById("statusText").textContent = "🔴 In chiamata — " + m + ":" + s;
+  }, 1000);
+}
+
+function stopTimer() { clearInterval(timer); seconds = 0; }
+
+async function handleCall() {
+  if (activeCall) {
+    activeCall.disconnect();
+    return;
+  }
+  const to = document.getElementById("dialInput").value;
+  if (!to || !device) return;
+  activeCall = await device.connect({ params: { To: to } });
+  activeCall.on("accept", () => { setStatus("in_chiamata", "#f97316"); startTimer(); document.getElementById("callBtn").className = "btn-hangup"; document.getElementById("callBtn").textContent = "📵"; document.getElementById("muteBtn").style.display = "block"; });
+  activeCall.on("disconnect", () => { activeCall = null; stopTimer(); setStatus("pronto", "#4ade80"); document.getElementById("callBtn").className = "btn-call"; document.getElementById("callBtn").textContent = "📞"; document.getElementById("muteBtn").style.display = "none"; });
+}
+
+function toggleMute() {
+  muted = !muted;
+  if (activeCall) activeCall.mute(muted);
+  document.getElementById("muteBtn").textContent = muted ? "🔇 MUTATO — clicca per riattivare" : "🎤 Silenzia microfono";
+}
+
+// Avvia automaticamente
+window.onload = initDevice;
+</script>
 </body>
 </html>
